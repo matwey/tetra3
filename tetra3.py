@@ -104,11 +104,12 @@ import scipy.stats
 import scipy
 from scipy.spatial import KDTree
 from scipy.spatial.distance import pdist, cdist
+from astroquery.gaia import Gaia
 
 from PIL import Image, ImageDraw
 
 _MAGIC_RAND = 2654435761
-_supported_databases = ('bsc5', 'hip_main', 'tyc_main')
+_supported_databases = ('bsc5', 'hip_main', 'tyc_main', 'gaiadr3')
 
 def _insert_at_index(item, index, table):
     """Inserts to table with quadratic probing."""
@@ -651,7 +652,8 @@ class Tetra3():
         if star_catalog in ('hip_main', 'tyc_main') and not catalog_file_full_pathname.suffix:
             catalog_file_full_pathname = catalog_file_full_pathname.with_suffix('.dat')
         
-        assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' +str(     catalog_file_full_pathname)   
+        if star_catalog != 'gaiadr3':
+            assert catalog_file_full_pathname.exists(), 'No star catalogue found at ' +str(     catalog_file_full_pathname)   
         
         # Calculate number of star catalog entries:
         if star_catalog == 'bsc5':
@@ -660,6 +662,8 @@ class Tetra3():
         elif star_catalog in ('hip_main', 'tyc_main'):
             header_length = 0
             num_entries = sum(1 for _ in open(catalog_file_full_pathname))
+        elif star_catalog == 'gaiadr3':
+            num_entries = 0
 
         self._logger.info('Loading catalogue ' + str(star_catalog) + ' with ' + str(num_entries) \
              + ' star entries.') 
@@ -671,7 +675,7 @@ class Tetra3():
             star_catID = np.zeros(num_entries, dtype=np.uint16)
         elif star_catalog == 'hip_main':
             star_catID = np.zeros(num_entries, dtype=np.uint32)
-        else: #is tyc_main
+        elif star_catalog == 'tyc_main':
             star_catID = np.zeros((num_entries, 3), dtype=np.uint16)
 
         # Read magnitude, RA, and Dec from star catalog:
@@ -714,6 +718,26 @@ class Tetra3():
 
                 if incomplete_entries:
                     self._logger.info('Skipped %i incomplete entries.' % incomplete_entries)
+        elif star_catalog == 'gaiadr3':
+            query = 'SELECT source_id, EPOCH_PROP_POS(ra, dec, parallax, pmra, pmdec, radial_velocity, 2016, {}) as pos, phot_bp_mean_mag FROM gaiadr3.gaia_source WHERE phot_bp_mean_mag < {}'.format(current_year, star_max_magnitude)
+            if range_ra is not None:
+                query += " AND ra BETWEEN {:.2f} AND {:.2f}".format(*range_ra)
+            if range_dec is not None:
+                query += " AND dec BETWEEN {:.2f} AND {:.2f}".format(*range_dec)
+
+            query = 'SELECT q.source_id, COORD1(q.pos) as ra, COORD2(q.pos) as dec, q.phot_bp_mean_mag FROM ({}) as q;'.format(query)
+
+            job = Gaia.launch_job_async(query)
+
+            stars = job.get_results()
+
+            source = np.asarray(stars['source_id']._data)
+            ra     = np.deg2rad(np.asarray(stars['ra']._data))
+            dec    = np.deg2rad(np.asarray(stars['dec']._data))
+            mag    = np.asarray(stars['phot_bp_mean_mag']._data)
+
+            star_catID = source
+            star_table = np.vstack([ra, dec, np.zeros_like(ra), np.zeros_like(ra), np.zeros_like(ra), mag]).T
 
         # Remove entries in which RA and Dec are both zero
         # (i.e. keep entries in which either RA or Dec is non-zero)
@@ -723,7 +747,7 @@ class Tetra3():
         star_table = star_table[brightness_ii, :]  # Sort by brightness
         num_entries = star_table.shape[0]
         # Trim and order catalogue ID array to match
-        if star_catalog in ('bsc5', 'hip_main'):
+        if star_catalog in ('bsc5', 'hip_main', 'gaiadr3'):
             star_catID = star_catID[kept][brightness_ii]
         else:
             star_catID = star_catID[kept, :][brightness_ii, :]
@@ -740,7 +764,7 @@ class Tetra3():
             star_table = star_table[kept, :]
             num_entries = star_table.shape[0]
             # Trim down catalogue ID to match
-            if star_catalog in ('bsc5', 'hip_main'):
+            if star_catalog in ('bsc5', 'hip_main', 'gaiadr3'):
                 star_catID = star_catID[kept]
             else:
                 star_catID = star_catID[kept, :]
@@ -755,7 +779,7 @@ class Tetra3():
             star_table = star_table[kept, :]
             num_entries = star_table.shape[0]
             # Trim down catalogue ID to match
-            if star_catalog in ('bsc5', 'hip_main'):
+            if star_catalog in ('bsc5', 'hip_main', 'gaiadr3'):
                 star_catID = star_catID[kept]
             else:
                 star_catID = star_catID[kept, :]
@@ -878,7 +902,7 @@ class Tetra3():
         pattern_index = (np.cumsum(keep_for_verifying)-1)
         pattern_list = pattern_index[np.array(list(pattern_list))].tolist()
         # Trim catalogue ID to match
-        if star_catalog in ('bsc5', 'hip_main'):
+        if star_catalog in ('bsc5', 'hip_main', 'gaiadr3'):
             star_catID = star_catID[keep_for_verifying]
         else:
             star_catID = star_catID[keep_for_verifying, :]
